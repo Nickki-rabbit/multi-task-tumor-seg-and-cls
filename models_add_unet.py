@@ -200,16 +200,16 @@ class Baseline(nn.Module):
     """
     Baseline network
     """
-    @staticmethod
+    # @staticmethod
     #def weight_init(m):
     #    if isinstance(m, nn.Linear):
     #        init.kaiming_normal_(m.weight)
     #        init.zeros_(m.bias)
 
-    def __init__(self, n_classes, dropout=False):
+    def __init__(self, input_channels, n_classes, dropout=False):
         super(Baseline, self).__init__()
         self.use_dropout = dropout
-        self.input_channels = 448
+        # self.input_channels = n_channels
         if dropout:
             self.dropout = nn.Dropout(p=0.5)
 
@@ -1055,7 +1055,8 @@ class Y_Net(nn.Module):
         fc1 = self.fc1(flatten)
         # diagClass = self.fc2(fc1)
         fc2 = self.fc2(fc1)
-        diagClass = self.softmax(fc2)
+        
+        # diagClass = self.softmax(fc2)
         
         # decode and concatenate
         d3 = self.Up3(x3) # 256 -> 128
@@ -1066,4 +1067,4 @@ class Y_Net(nn.Module):
         # d2 = self.Up_conv2(d2)
         d1 = self.Up1(d2)
         # d1 = self.Conv_1x1(d2)
-        return d1, diagClass
+        return d1, fc2
