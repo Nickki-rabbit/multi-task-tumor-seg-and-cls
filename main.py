@@ -10,7 +10,7 @@ from Criteria import CrossEntropyLoss2d
 import torch.backends.cudnn as cudnn
 import numpy as np
 import torch.optim.lr_scheduler
-import Transforms as myTransforms
+# import Transforms as myTransforms
 import HSI_transforms as myHSITransforms
 # import DataSet as myDataLoader
 import HSI_dataset as myDataLoader
@@ -22,6 +22,9 @@ from models_add_unet import Y_Net, Baseline
 import sklearn.svm
 from torchsummary import summary
 import segmentation_models_pytorch as smp
+
+import visdom
+
 
 def val(args, val_loader, model, criterion, criterion1):
     #switch to evaluation mode
@@ -137,6 +140,7 @@ def train(args, train_loader, model, criterion, criterion1, optimizer, epoch):
         class_loss.append(loss1.data)
         time_taken = time.time() - start_time
 
+        
         #compute the confusion matrix
         iouEvalTrain.addBatch(output.max(1)[1].data, target_var.data)
         iouDiagEvalTrain.addBatch(output1.max(1)[1].data, target2_var.data)
@@ -156,7 +160,7 @@ def train(args, train_loader, model, criterion, criterion1, optimizer, epoch):
 def save_checkpoint(state, filenameCheckpoint='checkpoint.pth.tar'):
     torch.save(state, filenameCheckpoint)
 
-def trainValidateSegmentation(args):
+def trainValidateSegmentation(args, viz):
     # check if processed data file exists or not
     if not os.path.isfile(args.cached_data_file):
         # dataLoader = ld.LoadData(args.data_dir, args.classes, args.diagClasses, args.cached_data_file)
@@ -196,13 +200,14 @@ def trainValidateSegmentation(args):
     channel_size = p_data.shape[3]
     print('p_data.shape is: ', p_data.shape) # patch,64,64,448
     print('p_data_val.shape is: ', p_gt_val.shape) # patch,64,64
-    
+
+    cls_params = dict(pooling='avg', dropout=0.25, activation='sigmoid', classes=3)
     if args.modelType == 'C1':
         model = net.ResNetC1_YNet(args.classes, args.diagClasses, args.pretrainedSeg)
     # elif args.modelType == 'U1':
     #     model = Y_Net(args.classes, args.diagClasses)
     elif args.modelType == 'Baseline':
-        model = Baseline(args.classes, args.diagClasses)
+        model = Baseline(input_channels=448, n_classes=3, dropout=True)
     elif args.modelType == 'SVM':
         model = sklearn.svm.SVC()
         # model = model.cuda() #SVC has no attr cuda
@@ -214,9 +219,19 @@ def trainValidateSegmentation(args):
         model = Y_Net(args.classes, args.diagClasses, channel_size)
     elif args.modelType == 'D1':
         model = net.ResNetD1_YNet(args.classes, args.diagClasses, args.pretrainedSeg)
-    elif args.modelType == 'Custom_block':
-        cls_params = dict(pooling='avg', dropout=0.25, activation='sigmoid', classes=3)
+    elif args.modelType == 'resnet18':
+        # cls_params = dict(pooling='avg', dropout=0.25, activation='sigmoid', classes=3)
+        model = smp.Unet(encoder_name='resnet18', encoder_weights='imagenet', in_channels=channel_size, aux_params=cls_params, classes=args.diagClasses)
+    elif args.modelType == 'resnet34':
+        model = smp.Unet(encoder_name='resnet34', encoder_weights='imagenet', in_channels=channel_size, aux_params=cls_params, classes=args.diagClasses)
+    elif args.modelType == 'resnet50':
+        model = smp.Unet(encoder_name='resnet50', encoder_weights='imagenet', in_channels=channel_size, aux_params=cls_params, classes=args.diagClasses)
+    elif args.modelType == 'resnet101':
         model = smp.Unet(encoder_name='resnet101', encoder_weights='imagenet', in_channels=channel_size, aux_params=cls_params, classes=args.diagClasses)
+    elif args.modelType == 'resnet152':
+        model = smp.Unet(encoder_name='resnet152', encoder_weights='imagenet', in_channels=channel_size, aux_params=cls_params, classes=args.diagClasses)
+    elif args.modelType == 'PSPNet':
+        model = smp.PSPNet(encoder_name='resnet34', encoder_depth=5, encoder_weights='imagenet', in_channels=channel_size, aux_params=cls_params, classes=args.diagClasses)
     else:
         print('Please select the correct model. ')
         exit(-1)
@@ -246,6 +261,9 @@ def trainValidateSegmentation(args):
     print('Weights to handle class-imbalance')
     weight = torch.from_numpy(data_dict['classWeights']) # convert the numpy array to torch
     print(weight)
+    print('Weights to handle diag-imbalance')
+    weight_1 = torch.from_numpy(data_dict['diagClassWeights'])
+    print(weight_1)
     criteria = CrossEntropyLoss2d(weight)
     if args.onGPU == True:
         weight = weight.cuda()
@@ -263,24 +281,24 @@ def trainValidateSegmentation(args):
         criteria = criteria.cuda()
         criteria1 = criteria1.cuda()
 
-    trainDataset = myTransforms.Compose([
-            myTransforms.RandomCropResize(20),
-            myTransforms.RandomHorizontalFlip(),
+    ###trainDataset = myTransforms.Compose([
+            # myTransforms.RandomCropResize(20),
+            # myTransforms.RandomHorizontalFlip(),
             # myTransforms.RandomCrop(64),
             # myTransforms.Normalize(mean=data['mean'], std=data['std']),
             # myTransforms.ToTensor(args.scaleIn),
             #
-        ])
+        #])
     
-    trainDataset3 = myTransforms.Compose([
-        myTransforms.Zoom(512, 512),
-        myTransforms.RandomCropResize(20),
-        myTransforms.RandomHorizontalFlip(),
+    ###trainDataset3 = myTransforms.Compose([
+        # myTransforms.Zoom(512, 512),
+        # myTransforms.RandomCropResize(20),
+        # myTransforms.RandomHorizontalFlip(),
         # myTransforms.RandomCrop(64),
         # myTransforms.Normalize(mean=data['mean'], std=data['std']),
-        myTransforms.ToTensor(args.scaleIn),
+        # myTransforms.ToTensor(args.scaleIn),
         #
-    ])
+    #])
     
     HSI_transform = myHSITransforms.Compose([
         myHSITransforms.flip(),
@@ -341,7 +359,10 @@ def trainValidateSegmentation(args):
 	
     #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_loss, gamma=0.5)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_loss, gamma=0.1)
-
+    
+    display_iter = 1
+    acc_win_1, acc_win, loss_win_1, loss_win = None, None, None, None
+    iter_ = 1
     for epoch in range(start_epoch, args.max_epochs):
         scheduler.step(epoch)
 
@@ -353,11 +374,57 @@ def trainValidateSegmentation(args):
         # train(args, trainLoader3, model, criteria, criteria1, optimizer, epoch)
         
         lossTr, overall_acc_tr, per_class_acc_tr, per_class_iu_tr, mIOU_tr, lossTr1, overall_acc_tr1, per_class_acc_tr1, per_class_iu_tr1, mIOU_tr1 = train(args, trainLoader, model, criteria, criteria1, optimizer, epoch)
-
-        
+                
         # evaluate on validation set
         lossVal, overall_acc_val, per_class_acc_val, per_class_iu_val, mIOU_val, lossVal1, overall_acc_val1, per_class_acc_val1, per_class_iu_val1, mIOU_val1 = val(args, valLoader, model, criteria, criteria1)
 
+        loss_train = lossTr.item()
+        loss_val = lossVal.item()
+        loss_train_1 = lossTr1.item()
+        loss_val_1 = lossVal1.item()
+        
+        if display_iter and iter_ % display_iter == 0:
+            update = None if loss_win is None else 'append'
+            loss_win = viz.line(
+                X = np.column_stack((np.arange(iter_-display_iter, iter_), np.arange(iter_-display_iter, iter_))),
+                Y = np.column_stack((np.asarray([loss_train]), np.asarray([loss_val]))),
+                win = loss_win,
+                update = update,
+                opts={'title': "Training loss for segmentation",
+                      'xlabel': "Iterations",
+                      'ylabel': "Loss"}
+            )
+            acc_win = viz.line(
+                X = np.column_stack((np.arange(iter_-display_iter, iter_), np.arange(iter_-display_iter, iter_))),
+                Y = np.column_stack((np.asarray([overall_acc_tr.item()]), np.asarray([overall_acc_val.item()]))),
+                win = acc_win,
+                update = update,
+                opts={'title': 'Overall accuracy for segmentation',
+                      'xlabel': 'Iterations',
+                      'ylabel': 'Accuracy'}
+            )
+            
+            loss_win_1 = viz.line(
+                X = np.column_stack((np.arange(iter_-display_iter, iter_), np.arange(iter_-display_iter, iter_))),
+                Y = np.column_stack((np.asarray([loss_train_1]), np.asarray([loss_val_1]))),
+                win = loss_win_1,
+                update=update,
+                opts={'title': "Training loss for classification",
+                      'xlabel': "Iterations",
+                      'ylabel': "Loss"}
+            )
+            acc_win_1 = viz.line(
+                X = np.column_stack((np.arange(iter_-display_iter, iter_), np.arange(iter_-display_iter, iter_))),
+                Y = np.column_stack((np.asarray([overall_acc_tr1.item()]), np.asarray([overall_acc_val1.item()]))),
+                win = acc_win_1,
+                update=update,
+                opts={'title': "Overall accuracy for classification",
+                      'xlabel': "Iterations",
+                      'ylabel': "Accuracy"}
+            )
+                      
+            iter_ += 1
+                               
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': str(model),
@@ -416,10 +483,10 @@ if __name__ == '__main__':
                                                                'We did not use it.')
     parser.add_argument('--max_epochs', type=int, default=100, help='Max. number of epochs')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for processing the data')
-    parser.add_argument('--batch_size', type=int, default=110, help='batch size')
-    parser.add_argument('--step_loss', type=int, default=100, help='decay the learning rate after these many epochs')
-    parser.add_argument('--lr', type=float, default=1e-3*15.56, help='learning rate')
-    parser.add_argument('--savedir', default='./results_ynet_add_trans', help='results directory')
+    parser.add_argument('--batch_size', type=int, default=10, help='batch size')
+    parser.add_argument('--step_loss', type=int, default=30, help='decay the learning rate after these many epochs')
+    parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
+    parser.add_argument('--savedir', default='./results_ynet', help='results directory')
     parser.add_argument('--visualizeNet', type=bool, default=False, help='Visualize the network as PDF file')
     parser.add_argument('--resume', type=bool, default=False,
                         help='Use this flag to load the last checkpoint for training')
@@ -430,18 +497,18 @@ if __name__ == '__main__':
                                                                            'class weights, are cached')
     parser.add_argument('--logFile', default='trainValLog.txt', help="Log file")
     parser.add_argument('--onGPU', default=True, help='True if you want to train on GPU')
-    parser.add_argument('--modelType', default='C1', help='Model could be C1 or D1')
+    parser.add_argument('--modelType', default='Y1', help='Model could be C1 or D1')
 
     args = parser.parse_args()
-    assert args.modelType in ['C1', 'D1', 'U1', 'Y1', 'SVM', 'Baseline', 'Custom_block']
+    assert args.modelType in ['C1', 'D1', 'U1', 'Y1', 'SVM', 'Baseline',
+                              'resnet18','resnet34','resnet50','resnet101','resnet152',
+                              'PSPNet']
     args.savedir = args.savedir + '_' + args.modelType + os.sep  # update the save dir name with model type
 
     # pre-trained segmentation model
     if args.modelType == 'C1':
         # args.pretrainedSeg = '../stage1/pretrained_models_st1/model_C1.pth'
         args.pretrainedSeg = './result_C1/model_99.pth'
-    elif args.modelType == 'Baseline':
-        args.pretrainedSeg = None
     elif args.modelType == 'U1':
         args.pretrainedSeg = './result_U1/model_99.pth'
     elif args.modelType == 'Y1':
@@ -453,4 +520,7 @@ if __name__ == '__main__':
         args.pretrainedSeg = None
 
     print(args)
-    trainValidateSegmentation(args)
+    viz = visdom.Visdom(env=args.modelType)
+    if not viz.check_connection:
+        print('Visdom server is not connected. Run python -m visdom.server')
+    trainValidateSegmentation(args, viz)
